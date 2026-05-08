@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -62,6 +64,55 @@ func main() {
 	})
 
 	//------------------------------------------------
+	// TEST PRINT (DUMMY)
+	//------------------------------------------------
+
+	r.GET("/test-print", func(c *gin.Context) {
+
+		size := c.DefaultQuery("size", "80mm")
+		isESCPos := c.DefaultQuery("esc_pos", "true") == "true"
+
+		dummyJob := PrintJob{
+			Content:   "DineX TEST PRINT\n----------------\nDate: " + time.Now().Format("2006-01-02 15:04:05") + "\nSize: " + size + "\nStatus: Working\n----------------\nThank you!",
+			PaperSize: size,
+			IsESCPos:  isESCPos,
+		}
+
+		printerName, printType, err := AutoDetectPrinter(dummyJob)
+		if err != nil {
+			c.JSON(500, gin.H{"success": false, "message": "No printer detected"})
+			return
+		}
+
+		var receipt []byte
+		if isESCPos {
+			receipt = GenerateESCPos(dummyJob.Content, dummyJob.PaperSize)
+		} else {
+			receipt = GenerateNormalText(dummyJob.Content)
+		}
+
+		switch printType {
+		case "USB":
+			err = PrintUSB(printerName, receipt)
+		case "BLUETOOTH":
+			err = PrintBluetooth(printerName, receipt)
+		case "LAN":
+			err = PrintLAN(dummyJob.PrinterIP, receipt)
+		}
+
+		if err != nil {
+			c.JSON(500, gin.H{"success": false, "message": err.Error()})
+			return
+		}
+
+		c.JSON(200, gin.H{
+			"success": true,
+			"message": "Test receipt sent to " + printerName,
+			"size":    size,
+		})
+	})
+
+	//------------------------------------------------
 	// PRINT
 	//------------------------------------------------
 
@@ -98,13 +149,23 @@ func main() {
 		}
 
 		//------------------------------------------------
-		// GENERATE ESC/POS
+		// GENERATE CONTENT
 		//------------------------------------------------
 
-		receipt := GenerateESCPos(
-			job.Content,
-			job.PaperSize,
-		)
+		var receipt []byte
+
+		if job.IsESCPos {
+
+			receipt = GenerateESCPos(
+				job.Content,
+				job.PaperSize,
+			)
+		} else {
+
+			receipt = GenerateNormalText(
+				job.Content,
+			)
+		}
 
 		//------------------------------------------------
 		// PRINT
@@ -170,6 +231,8 @@ func DetectPrinters() []map[string]string {
 
 	var result []map[string]string
 
+	statuses := GetPrinterStatuses()
+
 	//------------------------------------------------
 	// USB/WINDOWS PRINTERS
 	//------------------------------------------------
@@ -180,14 +243,83 @@ func DetectPrinters() []map[string]string {
 
 		for _, p := range names {
 
+			status := statuses[p]
+
 			result = append(result, map[string]string{
-				"name": p,
-				"type": DetectPrinterType(p),
+				"name":   p,
+				"type":   DetectPrinterType(p),
+				"status": TranslateStatus(status),
 			})
 		}
 	}
 
 	return result
+}
+
+// ----------------------------------------------------
+// GET STATUSES
+// ----------------------------------------------------
+
+func GetPrinterStatuses() map[string]string {
+
+	statuses := make(map[string]string)
+
+	cmd := exec.Command("wmic", "printer", "get", "Name,PrinterStatus")
+	output, _ := cmd.Output()
+
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+
+	// Skip header
+	if scanner.Scan() {
+	}
+
+	for scanner.Scan() {
+
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Fields(line)
+		if len(parts) >= 2 {
+
+			status := parts[len(parts)-1]
+			name := strings.TrimSpace(strings.Join(parts[:len(parts)-1], " "))
+			statuses[name] = status
+		}
+	}
+
+	return statuses
+}
+
+// ----------------------------------------------------
+// TRANSLATE STATUS
+// ----------------------------------------------------
+
+func TranslateStatus(code string) string {
+
+	switch code {
+	case "1":
+		return "Other"
+	case "2":
+		return "Unknown"
+	case "3":
+		return "Idle"
+	case "4":
+		return "Printing"
+	case "5":
+		return "Warming Up"
+	case "6":
+		return "Stopped"
+	case "7":
+		return "Offline"
+	case "8":
+		return "Paused"
+	case "9":
+		return "Error"
+	default:
+		return "Ready"
+	}
 }
 
 // ----------------------------------------------------
@@ -230,7 +362,18 @@ func AutoDetectPrinter(
 	}
 
 	//------------------------------------------------
-	// FIND THERMAL PRINTER
+	// PRIORITIZE DEFAULT PRINTER
+	//------------------------------------------------
+
+	defaultPrinter, err := printer.Default()
+	if err == nil {
+		return defaultPrinter, "USB", nil
+	}
+
+	//statuses := GetPrinterStatuses()
+
+	//------------------------------------------------
+	// FIND ACTIVE/THERMAL PRINTER
 	//------------------------------------------------
 
 	for _, p := range names {
@@ -240,18 +383,21 @@ func AutoDetectPrinter(
 		if strings.Contains(upper, "POS") ||
 			strings.Contains(upper, "58") ||
 			strings.Contains(upper, "80") ||
-			strings.Contains(upper, "XP") ||
+			strings.Contains(upper, "XP-") || // Changed from "XP" to avoid "XPS"
 			strings.Contains(upper, "THERMAL") ||
-			strings.Contains(upper, "EPSON") {
+			strings.Contains(upper, "EPSON") ||
+			strings.Contains(upper, "HP") || // Added for user's printer
+			strings.Contains(upper, "LASERJET") ||
+			strings.Contains(upper, "MFP") {
 
 			return p,
-				DetectPrinterType(p),
+				"USB",
 				nil
 		}
 	}
 
 	return names[0],
-		DetectPrinterType(names[0]),
+		"USB",
 		nil
 }
 
@@ -278,6 +424,17 @@ func DetectPrinterType(
 	}
 
 	return "USB"
+}
+
+// ----------------------------------------------------
+// NORMAL TEXT
+// ----------------------------------------------------
+
+func GenerateNormalText(
+	content string,
+) []byte {
+
+	return []byte(content + "\n\n\n")
 }
 
 // ----------------------------------------------------
@@ -396,8 +553,9 @@ func PrintUSB(
 
 	defer p.Close()
 
-	doc, err := p.StartRawDocument(
+	err = p.StartDocument(
 		"DineX Receipt",
+		"RAW",
 	)
 
 	if err != nil {
@@ -405,9 +563,9 @@ func PrintUSB(
 		return err
 	}
 
-	defer doc.Close()
+	defer p.EndDocument()
 
-	_, err = doc.Write(data)
+	_, err = p.Write(data)
 
 	return err
 }
