@@ -93,7 +93,7 @@ func main() {
 
 		switch printType {
 		case "USB":
-			err = PrintUSB(printerName, receipt)
+			err = PrintUSB(printerName, receipt, isESCPos)
 		case "BLUETOOTH":
 			err = PrintBluetooth(printerName, receipt)
 		case "LAN":
@@ -178,6 +178,7 @@ func main() {
 			err = PrintUSB(
 				printerName,
 				receipt,
+				job.IsESCPos,
 			)
 
 		case "BLUETOOTH":
@@ -540,6 +541,7 @@ func WrapText(
 func PrintUSB(
 	printerName string,
 	data []byte,
+	isESCPos bool,
 ) error {
 
 	p, err := printer.Open(
@@ -553,10 +555,16 @@ func PrintUSB(
 
 	defer p.Close()
 
-	err = p.StartDocument(
-		"DineX Receipt",
-		"RAW",
-	)
+	if isESCPos {
+		err = p.StartRawDocument(
+			"DineX Receipt",
+		)
+	} else {
+		err = p.StartDocument(
+			"DineX Receipt",
+			"TEXT",
+		)
+	}
 
 	if err != nil {
 
@@ -564,6 +572,15 @@ func PrintUSB(
 	}
 
 	defer p.EndDocument()
+
+	err = p.StartPage()
+
+	if err != nil {
+
+		return err
+	}
+
+	defer p.EndPage()
 
 	_, err = p.Write(data)
 
