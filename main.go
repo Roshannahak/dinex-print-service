@@ -15,23 +15,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type PrintJob struct {
-	Type       string `json:"type"`
-	PaperSize  string `json:"paper_size"` // 58mm,80mm,112mm
-	Content    string `json:"content"`
-	PrinterIP  string `json:"printer_ip,omitempty"`
-	Copies     int    `json:"copies"`
-	Restaurant string `json:"restaurant"`
-}
-
-type PrintResponse struct {
-	Success   bool   `json:"success"`
-	Message   string `json:"message"`
-	Printer   string `json:"printer"`
-	PrintType string `json:"print_type"`
-	PrintedAt string `json:"printed_at"`
-}
-
 func main() {
 
 	r := gin.Default()
@@ -68,20 +51,17 @@ func main() {
 
 	r.GET("/test-print", func(c *gin.Context) {
 
-		size := c.DefaultQuery("size", "80mm")
+		size := c.DefaultQuery("size", "58mm")
 
-		dummyJob := PrintJob{
-			Content:   "DineX TEST PRINT\n----------------\nDate: " + time.Now().Format("2006-01-02 15:04:05") + "\nSize: " + size + "\nStatus: Working\n----------------\nThank you!",
-			PaperSize: size,
-		}
+		content := "DineX TEST PRINT\n----------------\nDate: " + time.Now().Format("2006-01-02 15:04:05") + "\nSize: " + size + "\nStatus: Working\n----------------\nThank you!"
 
-		printerName, printType, err := AutoDetectPrinter(dummyJob)
+		printerName, printType, err := AutoDetectPrinter(size, "")
 		if err != nil {
 			c.JSON(500, gin.H{"success": false, "message": "No printer detected"})
 			return
 		}
 
-		receipt := GenerateNormalText(dummyJob.Content)
+		receipt := GenerateNormalText(content)
 
 		switch printType {
 		case "USB":
@@ -89,7 +69,7 @@ func main() {
 		case "BLUETOOTH":
 			err = PrintBluetooth(printerName, receipt)
 		case "LAN":
-			err = PrintLAN(dummyJob.PrinterIP, receipt)
+			err = PrintLAN("", receipt) // IP is handled inside AutoDetectPrinter logic or passed here
 		}
 
 		if err != nil {
@@ -108,11 +88,11 @@ func main() {
 	// PRINT
 	//------------------------------------------------
 
-	r.POST("/print", func(c *gin.Context) {
+	r.POST("/printbill", func(c *gin.Context) {
 
-		var job PrintJob
+		var req PrintBillRequest
 
-		if err := c.ShouldBindJSON(&job); err != nil {
+		if err := c.ShouldBindJSON(&req); err != nil {
 
 			c.JSON(400, gin.H{
 				"success": false,
@@ -128,7 +108,7 @@ func main() {
 
 		printerName,
 			printType,
-			err := AutoDetectPrinter(job)
+			err := AutoDetectPrinter(req.PrintSize, req.PrinterIP)
 
 		if err != nil {
 
@@ -144,9 +124,17 @@ func main() {
 		// GENERATE CONTENT
 		//------------------------------------------------
 
-		receipt := GenerateNormalText(
-			job.Content,
-		)
+		var receiptContent string
+		switch req.PrintSize {
+		case "80mm":
+			receiptContent = GenerateThermalBill80mm(req.Bill, req.Restaurant)
+		case "112mm":
+			receiptContent = GenerateThermalBill112mm(req.Bill, req.Restaurant)
+		default:
+			receiptContent = GenerateThermalBill58mm(req.Bill, req.Restaurant)
+		}
+
+		receipt := []byte(receiptContent)
 
 		//------------------------------------------------
 		// PRINT
@@ -171,7 +159,7 @@ func main() {
 		case "LAN":
 
 			err = PrintLAN(
-				job.PrinterIP,
+				printerName,
 				receipt,
 			)
 		}
@@ -308,16 +296,17 @@ func TranslateStatus(code string) string {
 // ----------------------------------------------------
 
 func AutoDetectPrinter(
-	job PrintJob,
+	paperSize string,
+	printerIP string,
 ) (string, string, error) {
 
 	//------------------------------------------------
 	// LAN
 	//------------------------------------------------
 
-	if job.PrinterIP != "" {
+	if printerIP != "" {
 
-		return job.PrinterIP,
+		return printerIP,
 			"LAN",
 			nil
 	}
