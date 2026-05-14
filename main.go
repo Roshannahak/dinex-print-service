@@ -20,7 +20,6 @@ type PrintJob struct {
 	PaperSize  string `json:"paper_size"` // 58mm,80mm,112mm
 	Content    string `json:"content"`
 	PrinterIP  string `json:"printer_ip,omitempty"`
-	IsESCPos   bool   `json:"is_esc_pos"`
 	Copies     int    `json:"copies"`
 	Restaurant string `json:"restaurant"`
 }
@@ -70,12 +69,10 @@ func main() {
 	r.GET("/test-print", func(c *gin.Context) {
 
 		size := c.DefaultQuery("size", "80mm")
-		isESCPos := c.DefaultQuery("esc_pos", "true") == "true"
 
 		dummyJob := PrintJob{
 			Content:   "DineX TEST PRINT\n----------------\nDate: " + time.Now().Format("2006-01-02 15:04:05") + "\nSize: " + size + "\nStatus: Working\n----------------\nThank you!",
 			PaperSize: size,
-			IsESCPos:  isESCPos,
 		}
 
 		printerName, printType, err := AutoDetectPrinter(dummyJob)
@@ -84,16 +81,11 @@ func main() {
 			return
 		}
 
-		var receipt []byte
-		if isESCPos {
-			receipt = GenerateESCPos(dummyJob.Content, dummyJob.PaperSize)
-		} else {
-			receipt = GenerateNormalText(dummyJob.Content)
-		}
+		receipt := GenerateNormalText(dummyJob.Content)
 
 		switch printType {
 		case "USB":
-			err = PrintUSB(printerName, receipt, isESCPos)
+			err = PrintUSB(printerName, receipt)
 		case "BLUETOOTH":
 			err = PrintBluetooth(printerName, receipt)
 		case "LAN":
@@ -152,20 +144,9 @@ func main() {
 		// GENERATE CONTENT
 		//------------------------------------------------
 
-		var receipt []byte
-
-		if job.IsESCPos {
-
-			receipt = GenerateESCPos(
-				job.Content,
-				job.PaperSize,
-			)
-		} else {
-
-			receipt = GenerateNormalText(
-				job.Content,
-			)
-		}
+		receipt := GenerateNormalText(
+			job.Content,
+		)
 
 		//------------------------------------------------
 		// PRINT
@@ -178,7 +159,6 @@ func main() {
 			err = PrintUSB(
 				printerName,
 				receipt,
-				job.IsESCPos,
 			)
 
 		case "BLUETOOTH":
@@ -439,109 +419,12 @@ func GenerateNormalText(
 }
 
 // ----------------------------------------------------
-// ESC/POS
-// ----------------------------------------------------
-
-func GenerateESCPos(
-	content string,
-	paper string,
-) []byte {
-
-	var width int
-
-	switch paper {
-
-	case "58mm":
-		width = 28
-
-	case "112mm":
-		width = 48
-
-	default:
-		width = 32
-	}
-
-	var output bytes.Buffer
-
-	//------------------------------------------------
-	// INIT
-	//------------------------------------------------
-
-	output.Write([]byte{0x1B, 0x40})
-
-	//------------------------------------------------
-	// LEFT ALIGN
-	//------------------------------------------------
-
-	output.Write([]byte{0x1B, 0x61, 0x00})
-
-	lines := strings.Split(
-		content,
-		"\n",
-	)
-
-	for _, line := range lines {
-
-		output.WriteString(
-			WrapText(
-				line,
-				width,
-			),
-		)
-	}
-
-	output.WriteString("\n\n\n")
-
-	//------------------------------------------------
-	// CUT
-	//------------------------------------------------
-
-	output.Write([]byte{
-		0x1D,
-		0x56,
-		0x41,
-		0x10,
-	})
-
-	return output.Bytes()
-}
-
-// ----------------------------------------------------
-// TEXT WRAP
-// ----------------------------------------------------
-
-func WrapText(
-	text string,
-	width int,
-) string {
-
-	if len(text) <= width {
-
-		return text + "\n"
-	}
-
-	var result string
-
-	for len(text) > width {
-
-		result += text[:width] + "\n"
-
-		text = text[width:]
-	}
-
-	result += text + "\n"
-
-	return result
-}
-
-// ----------------------------------------------------
 // USB PRINT
 // ----------------------------------------------------
 
 func PrintUSB(
 	printerName string,
 	data []byte,
-	isESCPos bool,
 ) error {
 
 	p, err := printer.Open(
@@ -555,16 +438,10 @@ func PrintUSB(
 
 	defer p.Close()
 
-	if isESCPos {
-		err = p.StartRawDocument(
-			"DineX Receipt",
-		)
-	} else {
-		err = p.StartDocument(
-			"DineX Receipt",
-			"TEXT",
-		)
-	}
+	err = p.StartDocument(
+		"DineX Receipt",
+		"TEXT",
+	)
 
 	if err != nil {
 
