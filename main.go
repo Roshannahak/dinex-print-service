@@ -3,6 +3,9 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"dinex-print-service/controller"
+	"dinex-print-service/model"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net"
@@ -69,7 +72,7 @@ func main() {
 		case "BLUETOOTH":
 			err = PrintBluetooth(printerName, receipt)
 		case "LAN":
-			err = PrintLAN("", receipt) // IP is handled inside AutoDetectPrinter logic or passed here
+			err = PrintLAN(printerName, receipt)
 		}
 
 		if err != nil {
@@ -90,7 +93,7 @@ func main() {
 
 	r.POST("/printbill", func(c *gin.Context) {
 
-		var req PrintBillRequest
+		var req model.PrintBillRequest
 
 		if err := c.ShouldBindJSON(&req); err != nil {
 
@@ -127,42 +130,49 @@ func main() {
 		var receiptContent string
 		switch req.PrintSize {
 		case "80mm":
-			receiptContent = GenerateThermalBill80mm(req.Bill, req.Restaurant)
+			receiptContent = controller.GenerateThermalBill80mm(req.Bill, req.Restaurant)
 		case "112mm":
-			receiptContent = GenerateThermalBill112mm(req.Bill, req.Restaurant)
+			receiptContent = controller.GenerateThermalBill112mm(req.Bill, req.Restaurant)
 		default:
-			receiptContent = GenerateThermalBill58mm(req.Bill, req.Restaurant)
+			receiptContent = controller.GenerateThermalBill58mm(req.Bill, req.Restaurant)
 		}
 
 		receipt := []byte(receiptContent)
 
 		//------------------------------------------------
+		// HANDLE QR
+		//------------------------------------------------
+		//------------------------------------------------
+		// HANDLE QR (Use high-quality graphical printing for all formats)
+		//------------------------------------------------
+		if req.QR != "" {
+			err = PrintLaser(printerName, receiptContent, req.QR, req.PrintSize)
+			if err != nil {
+				c.JSON(500, gin.H{"success": false, "message": err.Error()})
+				return
+			}
+			c.JSON(200, model.PrintResponse{
+				Success:   true,
+				Message:   "printed successfully",
+				Printer:   printerName,
+				PrintType: printType,
+				PrintedAt: time.Now().Format(time.RFC3339),
+			})
+			return
+		}
+
+		//------------------------------------------------
 		// PRINT
 		//------------------------------------------------
 
-		switch printType {
-
+			switch printType {
 		case "USB":
-
-			err = PrintUSB(
-				printerName,
-				receipt,
-			)
-
-		case "BLUETOOTH":
-
-			err = PrintBluetooth(
-				printerName,
-				receipt,
-			)
-
-		case "LAN":
-
-			err = PrintLAN(
-				printerName,
-				receipt,
-			)
-		}
+			err = PrintUSB(printerName, receipt)
+			case "BLUETOOTH":
+				err = PrintBluetooth(printerName, receipt)
+			case "LAN":
+				err = PrintLAN(printerName, receipt)
+			}
 
 		if err != nil {
 
@@ -178,7 +188,7 @@ func main() {
 		// ACKNOWLEDGEMENT
 		//------------------------------------------------
 
-		c.JSON(200, PrintResponse{
+		c.JSON(200, model.PrintResponse{
 			Success:   true,
 			Message:   "printed successfully",
 			Printer:   printerName,
@@ -361,13 +371,13 @@ func AutoDetectPrinter(
 			strings.Contains(upper, "MFP") {
 
 			return p,
-				"USB",
+				DetectPrinterType(p),
 				nil
 		}
 	}
 
 	return names[0],
-		"USB",
+		DetectPrinterType(names[0]),
 		nil
 }
 
@@ -427,10 +437,7 @@ func PrintUSB(
 
 	defer p.Close()
 
-	err = p.StartDocument(
-		"DineX Receipt",
-		"TEXT",
-	)
+	err = p.StartDocument("DineX Receipt", "TEXT")
 
 	if err != nil {
 
@@ -505,6 +512,84 @@ func PrintLAN(
 	_, err = conn.Write(data)
 
 	return err
+}
+
+// ----------------------------------------------------
+// LASER PRINT (WITH GRAPHICS)
+// ----------------------------------------------------
+
+func PrintLaser(printerName string, text string, qrBase64 string, paperSize string) error {
+
+	// 1. Save QR to temp file
+	qrPath := os.TempDir() + "\\dinex_qr.png"
+	qrBytes, err := base64.StdEncoding.DecodeString(qrBase64)
+	if err == nil {
+		os.WriteFile(qrPath, qrBytes, 0644)
+	}
+
+	// 2. Escape text for PowerShell
+	escapedText := strings.ReplaceAll(text, "`", "``")
+	escapedText = strings.ReplaceAll(escapedText, "\"", "`\"")
+	escapedText = strings.ReplaceAll(escapedText, "$", "`$")
+
+	// 3. Build PowerShell Script (Use [char]10 to avoid backtick conflict in Go raw strings)
+	psScript := fmt.Sprintf(`
+		Add-Type -AssemblyName System.Drawing
+		$pd = New-Object System.Drawing.Printing.PrintDocument
+		$pd.PrinterSettings.PrinterName = "%s"
+		$pd.add_PrintPage({
+			$g = $_.Graphics
+			$f = New-Object System.Drawing.Font("Courier New", 9)
+			$y = 10
+			
+			# Define Paper Width in Pixels (96 DPI)
+			$paperWidth = 200 # 58mm Default
+			$qrWidth = 80
+			if ("%s" -eq "80mm") { $paperWidth = 300; $qrWidth = 110 }
+			if ("%s" -eq "112mm") { $paperWidth = 420; $qrWidth = 140 }
+
+			# Use the smaller of detected width or our defined width
+			$actualWidth = [Math]::Min($_.PageBounds.Width, $paperWidth)
+
+			# Print Main Bill Text
+			$text = @"
+%s
+"@
+			$g.DrawString($text, $f, [System.Drawing.Brushes]::Black, 10, $y)
+			
+			# Calculate Y position after text
+			$textSize = $g.MeasureString($text, $f)
+			$y += $textSize.Height - 2
+
+			if ("%s" -ne "") {
+				# Print "Scan & Pay" Label
+				$headerFont = New-Object System.Drawing.Font("Courier New", 10, [System.Drawing.FontStyle]::Bold)
+				$headerText = "Scan & Pay"
+				$headerSize = $g.MeasureString($headerText, $headerFont)
+				$headerX = ($actualWidth - $headerSize.Width) / 2
+				$g.DrawString($headerText, $headerFont, [System.Drawing.Brushes]::Black, $headerX, $y)
+				$y += $headerSize.Height
+
+				# Print QR Image (Centered)
+				if (Test-Path "%s") {
+					$img = [System.Drawing.Image]::FromFile("%s")
+					$qrX = ($actualWidth - $qrWidth) / 2
+					$g.DrawImage($img, $qrX, $y, $qrWidth, $qrWidth)
+					$img.Dispose()
+				}
+			}
+		})
+		$pd.Print()
+	`, printerName, paperSize, paperSize, escapedText, qrBase64, qrPath, qrPath)
+
+	// 4. Execute PowerShell
+	cmd := exec.Command("powershell", "-Command", psScript)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("powershell error: %v, output: %s", err, string(output))
+	}
+
+	return nil
 }
 
 // ----------------------------------------------------
