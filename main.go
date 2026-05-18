@@ -638,17 +638,22 @@ func PrintLaser(printerName string, text string, qrBase64 string, paperSize stri
 			$f = New-Object System.Drawing.Font("Courier New", [float]$fontSize)
 			$y = 10
 
-			# Use the smaller of detected width or our defined width
-			$actualWidth = [Math]::Min($_.PageBounds.Width, $paperWidth)
+			# Get the true physical width of the page to perfectly center on large pages like A5
+			$pageWidth = $_.PageBounds.Width
 
 			# Print Main Bill Text
 			$text = @"
 %s
 "@
-			$g.DrawString($text, $f, [System.Drawing.Brushes]::Black, 10, $y)
+			# Measure text dimensions to align it center
+			$textSize = $g.MeasureString($text, $f)
+			
+			$textX = ($pageWidth - $textSize.Width) / 2
+			if ($textX -lt 0) { $textX = 0 }
+			
+			$g.DrawString($text, $f, [System.Drawing.Brushes]::Black, $textX, $y)
 			
 			# Calculate Y position after text
-			$textSize = $g.MeasureString($text, $f)
 			$y += $textSize.Height - 2
 
 			if ("%s" -ne "") {
@@ -656,14 +661,16 @@ func PrintLaser(printerName string, text string, qrBase64 string, paperSize stri
 				$headerFont = New-Object System.Drawing.Font("Courier New", 10, [System.Drawing.FontStyle]::Bold)
 				$headerText = "Scan & Pay"
 				$headerSize = $g.MeasureString($headerText, $headerFont)
-				$headerX = ($actualWidth - $headerSize.Width) / 2
+				$headerX = ($pageWidth - $headerSize.Width) / 2
+				if ($headerX -lt 0) { $headerX = 0 }
 				$g.DrawString($headerText, $headerFont, [System.Drawing.Brushes]::Black, $headerX, $y)
 				$y += $headerSize.Height
 
 				# Print QR Image (Centered)
 				if (Test-Path "%s") {
 					$img = [System.Drawing.Image]::FromFile("%s")
-					$qrX = ($actualWidth - $qrWidth) / 2
+					$qrX = ($pageWidth - $qrWidth) / 2
+					if ($qrX -lt 0) { $qrX = 0 }
 					$g.DrawImage($img, $qrX, $y, $qrWidth, $qrWidth)
 					$img.Dispose()
 				}
