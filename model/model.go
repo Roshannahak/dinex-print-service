@@ -71,3 +71,29 @@ type PrintResponse struct {
 	PrintType string `json:"print_type"`
 	PrintedAt string `json:"printed_at"`
 }
+
+type PrintKotRequest struct {
+	Kot       Kds    `json:"kot"`
+	PrintSize string `json:"printsize"`
+	PrinterIP string `json:"printer_ip,omitempty"`
+}
+
+type Kds struct {
+	ID              string    `json:"id"`
+	OrderId         string    `json:"orderid"`
+	RestaurantObjId string    `json:"restaurantobjid"`
+	KdsNumber       string    `json:"kdsnumber"`
+	TableNumber     string    `json:"table"` // maps to "table" in JSON
+	KdsItems        []KdsItem `json:"kdsitems"`
+	Printed         bool      `json:"printed"`
+	Status          string    `json:"status"`
+	CreatedAt       int64     `json:"createdat"`
+	UpdatedAt       int64     `json:"updatedat"`
+}
+
+type KdsItem struct {
+	ItemId       string `json:"itemid"`
+	Name         string `json:"name"`
+	FoodCategory string `json:"foodcategory"`
+	Quantity     int    `json:"quantity"`
+}

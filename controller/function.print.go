@@ -102,3 +102,58 @@ func hasUPIPayment(payments []model.PaymentDetail) (bool, float64) {
 	}
 	return false, 0
 }
+
+// 58mm
+func GenerateThermalKot58mm(kds model.Kds) string {
+	return generateThermalKot(kds, 28, "----------------------------\n")
+}
+
+// 80mm
+func GenerateThermalKot80mm(kds model.Kds) string {
+	return generateThermalKot(kds, 32, "--------------------------------\n")
+}
+
+// 112
+func GenerateThermalKot112mm(kds model.Kds) string {
+	return generateThermalKot(kds, 48, "------------------------------------------------\n")
+}
+
+func generateThermalKot(kds model.Kds, width int, line string) string {
+
+	// Time format
+	loc, err := time.LoadLocation("Asia/Kolkata")
+	var timestamp time.Time
+	if err != nil {
+		timestamp = time.Unix(kds.CreatedAt, 0).Local()
+	} else {
+		timestamp = time.Unix(kds.CreatedAt, 0).In(loc)
+	}
+	formattedTime := timestamp.Format("02-01-2006 03:04 PM")
+
+	var output string
+
+	// Header
+	output += centerText(kds.KdsNumber, width)
+	output += line
+
+	// Basic Info
+	output += fmt.Sprintf("order: %s-%s\n", kds.OrderId, kds.TableNumber)
+	output += fmt.Sprintf("time: %s\n", formattedTime)
+
+	output += line
+
+	// Items (only trim adjusted based on width)
+	nameLimit := width - 10
+
+	for _, item := range kds.KdsItems {
+		itemName := item.Name + "(" + string(item.FoodCategory) + ")"
+		name := trimText(itemName, nameLimit)
+		qty := fmt.Sprintf("x%d", item.Quantity)
+		output += formatTwoColumn(name, qty, width)
+	}
+
+	output += line
+	output += "\n\n\n"
+
+	return output
+}

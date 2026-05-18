@@ -68,7 +68,7 @@ func main() {
 
 		switch printType {
 		case "USB":
-			err = PrintUSB(printerName, receipt)
+			err = PrintLaser(printerName, string(receipt), "", size)
 		case "BLUETOOTH":
 			err = PrintBluetooth(printerName, receipt)
 		case "LAN":
@@ -165,14 +165,14 @@ func main() {
 		// PRINT
 		//------------------------------------------------
 
-			switch printType {
+		switch printType {
 		case "USB":
-			err = PrintUSB(printerName, receipt)
-			case "BLUETOOTH":
-				err = PrintBluetooth(printerName, receipt)
-			case "LAN":
-				err = PrintLAN(printerName, receipt)
-			}
+			err = PrintLaser(printerName, receiptContent, "", req.PrintSize)
+		case "BLUETOOTH":
+			err = PrintBluetooth(printerName, receipt)
+		case "LAN":
+			err = PrintLAN(printerName, receipt)
+		}
 
 		if err != nil {
 
@@ -197,9 +197,97 @@ func main() {
 		})
 	})
 
-	log.Println("DineX Print Service Running :8080")
+	//------------------------------------------------
+	// PRINT KOT
+	//------------------------------------------------
 
-	r.Run(":8080")
+	r.POST("/printkot", func(c *gin.Context) {
+
+		var req model.PrintKotRequest
+
+		if err := c.ShouldBindJSON(&req); err != nil {
+
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+
+			return
+		}
+
+		//------------------------------------------------
+		// DETECT PRINTER
+		//------------------------------------------------
+
+		printerName,
+			printType,
+			err := AutoDetectPrinter(req.PrintSize, req.PrinterIP)
+
+		if err != nil {
+
+			c.JSON(500, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+
+			return
+		}
+
+		//------------------------------------------------
+		// GENERATE CONTENT
+		//------------------------------------------------
+
+		var receiptContent string
+		switch req.PrintSize {
+		case "80mm":
+			receiptContent = controller.GenerateThermalKot80mm(req.Kot)
+		case "112mm":
+			receiptContent = controller.GenerateThermalKot112mm(req.Kot)
+		default:
+			receiptContent = controller.GenerateThermalKot58mm(req.Kot)
+		}
+
+		receipt := []byte(receiptContent)
+
+		//------------------------------------------------
+		// PRINT
+		//------------------------------------------------
+
+		switch printType {
+		case "USB":
+			err = PrintLaser(printerName, receiptContent, "", req.PrintSize)
+		case "BLUETOOTH":
+			err = PrintBluetooth(printerName, receipt)
+		case "LAN":
+			err = PrintLAN(printerName, receipt)
+		}
+
+		if err != nil {
+
+			c.JSON(500, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+
+			return
+		}
+
+		//------------------------------------------------
+		// ACKNOWLEDGEMENT
+		//------------------------------------------------
+
+		c.JSON(200, model.PrintResponse{
+			Success:   true,
+			Message:   "printed successfully",
+			Printer:   printerName,
+			PrintType: printType,
+			PrintedAt: time.Now().Format(time.RFC3339),
+		})
+	})
+
+	log.Println("DineX Print Service Running :3232")
+
+	r.Run(":3232")
 }
 
 // ----------------------------------------------------
@@ -539,14 +627,16 @@ func PrintLaser(printerName string, text string, qrBase64 string, paperSize stri
 		$pd.PrinterSettings.PrinterName = "%s"
 		$pd.add_PrintPage({
 			$g = $_.Graphics
-			$f = New-Object System.Drawing.Font("Courier New", 9)
-			$y = 10
 			
-			# Define Paper Width in Pixels (96 DPI)
+			$fontSize = 9.0
 			$paperWidth = 200 # 58mm Default
 			$qrWidth = 80
-			if ("%s" -eq "80mm") { $paperWidth = 300; $qrWidth = 110 }
-			if ("%s" -eq "112mm") { $paperWidth = 420; $qrWidth = 140 }
+			
+			if ("%s" -eq "80mm") { $paperWidth = 300; $qrWidth = 110; $fontSize = 11.5 }
+			if ("%s" -eq "112mm") { $paperWidth = 420; $qrWidth = 140; $fontSize = 11.0 }
+			
+			$f = New-Object System.Drawing.Font("Courier New", [float]$fontSize)
+			$y = 10
 
 			# Use the smaller of detected width or our defined width
 			$actualWidth = [Math]::Min($_.PageBounds.Width, $paperWidth)
